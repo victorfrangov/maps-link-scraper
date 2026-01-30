@@ -1,4 +1,4 @@
-# scraper-business
+# Google Maps Website Lead Scraper
 
 Simple Google Maps lead scraper using Selenium + ChromeDriver.
 

@@ -1,5 +1,9 @@
 import time
 import argparse
+import re
+from pathlib import Path
+from datetime import datetime
+import pandas as pd
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -14,7 +18,7 @@ SOCIAL_DOMAINS = [
     "instagram.com", 
     "linkedin.com", 
     "yelp.ca", 
-    "yellowpages.ca",
+    "yellowpages.ca", 
     "linktr.ee"
 ]
 # ---------------------
@@ -23,7 +27,6 @@ def main(search_query: str, max_leads: int, headless: bool = False):
     options = webdriver.ChromeOptions()
     options.add_argument("--lang=en-US")
     if headless:
-        # modern headless flag for Chromium; fallback to "--headless" if needed
         options.add_argument("--headless=new")
 
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
@@ -61,6 +64,7 @@ def main(search_query: str, max_leads: int, headless: bool = False):
         print("5. Checking businesses...")
 
         leads_found = 0
+        leads = []  # collect rows for Excel
 
         for i in range(max_leads):
             try:
@@ -88,72 +92,108 @@ def main(search_query: str, max_leads: int, headless: bool = False):
                 wait.until(EC.presence_of_element_located((By.TAG_NAME, "h1")))
                 time.sleep(1.5)
 
-                # --- NEW WEBSITE CHECK LOGIC ---
+                # --- WEBSITE CHECK LOGIC ---
                 has_valid_website = False
                 found_url = ""
+                website_type = "none"
 
-                # 1. Look for the Authority Button (The main Website button)
-                # Google usually gives this button the attribute data-item-id="authority"
                 website_btns = driver.find_elements(By.CSS_SELECTOR, "[data-item-id='authority']")
 
                 if len(website_btns) > 0:
-                    # The button exists, but let's check the URL
                     website_btn = website_btns[0]
-                    found_url = website_btn.get_attribute("href")
-
+                    found_url = website_btn.get_attribute("href") or ""
                     if found_url:
-                        # Check if the URL is in our "Block List"
-                        is_social = False
-                        for domain in SOCIAL_DOMAINS:
-                            if domain in found_url.lower():
-                                is_social = True
-                                break
-
+                        is_social = any(domain in found_url.lower() for domain in SOCIAL_DOMAINS)
                         if is_social:
+                            website_type = "social"
                             print(f"[LEAD - SOCIAL ONLY] {name} -> {found_url}")
-                            # It counts as "No Valid Website", so we keep has_valid_website = False
                         else:
+                            website_type = "valid"
                             has_valid_website = True
                     else:
-                        # Button exists but no URL? Assume valid to be safe.
+                        website_type = "valid"
                         has_valid_website = True
 
-                # 2. Secondary check: If no button found, check text links just in case
+                # Secondary check for textual "Website" links
                 if not has_valid_website and not found_url:
-                    # Look for links with "Website" text manually
                     all_links = driver.find_elements(By.TAG_NAME, "a")
                     for link in all_links:
-                        link_text = link.text or link.get_attribute("aria-label") or ""
+                        link_text = (link.text or link.get_attribute("aria-label") or "").strip()
                         if "Website" in link_text:
-                            # We found a text link saying website. Check its href.
-                            href = link.get_attribute("href")
+                            href = link.get_attribute("href") or ""
+                            found_url = href
                             if href:
-                                is_social = False
-                                for domain in SOCIAL_DOMAINS:
-                                    if domain in href.lower():
-                                        is_social = True
-                                        break
+                                is_social = any(domain in href.lower() for domain in SOCIAL_DOMAINS)
+                                website_type = "social" if is_social else "valid"
                                 if not is_social:
                                     has_valid_website = True
                             break
 
-                # RESULT
-                if not has_valid_website:
-                    # If we didn't flag it as "Social Only" earlier, print as standard lead
-                    if not found_url:
-                        print(f"[LEAD - NO WEBSITE] {name}")
+                # --- PHONE PARSING ---
+                phone = "Not found"
+                try:
+                    # 1) Look for tel: links (most reliable)
+                    tel_links = driver.find_elements(By.XPATH, "//a[starts-with(@href,'tel:')]")
+                    if tel_links:
+                        raw = tel_links[0].get_attribute("href").replace("tel:", "").strip()
+                        phone = re.sub(r'[^\d\+]', '', raw)
+                    else:
+                        # 2) Fallback: search text in the details panel near the business name
+                        try:
+                            h1 = driver.find_element(By.TAG_NAME, "h1")
+                            panel = h1.find_element(By.XPATH, "ancestor::div[1]")
+                            panel_text = panel.text
+                        except Exception:
+                            panel_text = driver.find_element(By.TAG_NAME, "body").text
+                        phone_match = re.search(r'(\+?\d[\d\-\s\(\)\.]{6,}\d)', panel_text)
+                        if phone_match:
+                            raw = phone_match.group(1).strip()
+                            phone = re.sub(r'[^\d\+]', '', raw)
+                except Exception:
+                    phone = "Not found"
 
+                # --- ADDRESS (best-effort) ---
+                address = "Not found"
+                try:
+                    addr_elems = driver.find_elements(By.CSS_SELECTOR, "[data-item-id='address'], [aria-label*='Address']")
+                    if addr_elems:
+                        address = addr_elems[0].text or addr_elems[0].get_attribute("aria-label") or "Not found"
+                    else:
+                        # fallback: try to capture lines near the name header
+                        panel_text = driver.find_element(By.TAG_NAME, "body").text
+                        # heuristic: look for a line containing a digit + street
+                        addr_match = re.search(r'\d{1,5}\s+[A-Za-z0-9\.\-]+\s+[A-Za-z]+', panel_text)
+                        if addr_match:
+                            address = addr_match.group(0).strip()
+                except Exception:
+                    address = "Not found"
+
+                # RESULT handling
+                if website_type != "valid":
+                    if website_type == "none":
+                        print(f"[LEAD - NO WEBSITE] {name}")
+                    # count social-only and no-website as leads
                     leads_found += 1
 
+                # collect lead row
+                leads.append({
+                    "name": name,
+                    "website": found_url or "",
+                    "website_type": website_type,
+                    "phone": phone,
+                    "address": address
+                })
+
                 # Go Back
-                back_btn = driver.find_element(By.CSS_SELECTOR, "button[aria-label='Back']")
-                back_btn.click()
+                try:
+                    back_btn = driver.find_element(By.CSS_SELECTOR, "button[aria-label='Back']")
+                    back_btn.click()
+                    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[role='feed']")))
+                    time.sleep(1)
+                except:
+                    pass
 
-                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[role='feed']")))
-                time.sleep(1)
-
-            except Exception as e:
-                # If stuck, try to go back
+            except Exception:
                 try:
                     driver.find_element(By.CSS_SELECTOR, "button[aria-label='Back']").click()
                     time.sleep(1)
@@ -164,11 +204,35 @@ def main(search_query: str, max_leads: int, headless: bool = False):
         print("-" * 30)
         print(f"Finished. Found {leads_found} potential leads.")
 
+        # --- WRITE TO EXCEL ---
+        try:
+            out_dir = Path.cwd()
+            # filename based on sanitized query -> append when same query
+            safe_query = re.sub(r'[^A-Za-z0-9]+', '_', search_query).strip('_').lower()[:64] or "results"
+            out_file = out_dir / f"leads_{safe_query}.xlsx"
+
+            new_df = pd.DataFrame(leads, columns=["name", "website", "website_type", "phone", "address"])
+
+            if out_file.exists():
+                try:
+                    existing = pd.read_excel(out_file)
+                    combined = pd.concat([existing, new_df], ignore_index=True)
+                    combined.drop_duplicates(subset=["name", "address", "phone", "website"], inplace=True)
+                except Exception:
+                    combined = new_df
+            else:
+                combined = new_df
+
+            combined.to_excel(out_file, index=False)
+            print(f"Saved leads to: {out_file}")
+        except Exception as e:
+            print(f"Failed to write Excel: {e}")
+
     except Exception as e:
         print(f"Error: {e}")
 
     finally:
-        time.sleep(5)
+        time.sleep(2)
         driver.quit()
 
 if __name__ == "__main__":

@@ -54,12 +54,12 @@ def main(search_query: str, max_leads: int, headless: bool = False):
 
         print("3. Waiting for results list...")
         feed = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[role='feed']")))
-        time.sleep(3)
+        time.sleep(1)
 
         print("4. Pre-scrolling...")
         for _ in range(3):
             driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", feed)
-            time.sleep(2)
+            time.sleep(0.5)
 
         print("5. Checking businesses...")
 
@@ -85,12 +85,12 @@ def main(search_query: str, max_leads: int, headless: bool = False):
 
                 # Click Card
                 driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", card)
-                time.sleep(1)
+                time.sleep(0.2)
                 card.click()
 
                 # Wait for Details
                 wait.until(EC.presence_of_element_located((By.TAG_NAME, "h1")))
-                time.sleep(1.5)
+                time.sleep(0.5)
 
                 # --- WEBSITE CHECK LOGIC ---
                 has_valid_website = False
@@ -172,31 +172,31 @@ def main(search_query: str, max_leads: int, headless: bool = False):
                 if website_type != "valid":
                     if website_type == "none":
                         print(f"[LEAD - NO WEBSITE] {name}")
-                    # count social-only and no-website as leads
+                    elif website_type == "social":
+                        print(f"[LEAD - SOCIAL ONLY] {name} -> {found_url}")
                     leads_found += 1
-
-                # collect lead row
-                leads.append({
-                    "name": name,
-                    "website": found_url or "",
-                    "website_type": website_type,
-                    "phone": phone,
-                    "address": address
-                })
+                    # collect lead row (only for leads without a valid website)
+                    leads.append({
+                        "name": name,
+                        "website": found_url or "",
+                        "website_type": website_type,
+                        "phone": phone,
+                        "address": address
+                    })
 
                 # Go Back
                 try:
                     back_btn = driver.find_element(By.CSS_SELECTOR, "button[aria-label='Back']")
                     back_btn.click()
                     wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[role='feed']")))
-                    time.sleep(1)
+                    time.sleep(0.5)
                 except:
                     pass
 
             except Exception:
                 try:
                     driver.find_element(By.CSS_SELECTOR, "button[aria-label='Back']").click()
-                    time.sleep(1)
+                    time.sleep(0.5)
                 except:
                     pass
                 continue
@@ -232,7 +232,7 @@ def main(search_query: str, max_leads: int, headless: bool = False):
         print(f"Error: {e}")
 
     finally:
-        time.sleep(2)
+        time.sleep(0.5)
         driver.quit()
 
 if __name__ == "__main__":
